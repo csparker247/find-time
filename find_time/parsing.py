@@ -7,6 +7,11 @@ from find_time.classes import TimeSpan, Person
 
 _AVAIL_GRAMMAR = r"""
 
+%import common.WS_INLINE
+%import common.SH_COMMENT
+%ignore WS_INLINE
+%ignore SH_COMMENT
+
 ?start : _NL* _entries 
 
 _entries: entry [_NL _entries*]
@@ -43,12 +48,7 @@ LONG_DAY : "sunday"i | "sun"i
          | "friday"i | "fri"i
          | "saturday"i | "sat"i
 
-%import common.WS_INLINE
-%import common.SH_COMMENT
-%ignore WS_INLINE
-%ignore SH_COMMENT
-
-_NL: /(\r?\n[\t ]*)+/
+_NL: (/\r?\n[\t ]*/ | SH_COMMENT)+
 """
 
 
