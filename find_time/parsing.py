@@ -9,50 +9,52 @@ _AVAIL_GRAMMAR = r"""
 
 %import common.WS_INLINE
 %import common.SH_COMMENT
-%ignore WS_INLINE
 %ignore SH_COMMENT
 
 ?start : _NL* entries _NL*
 
 entries: entry (_NL+ entry)*
-entry : name list_of_availability
+entry : name _WS list_of_availability _WS?
 
 name : NAME_TEXT ":"
 NAME_TEXT : /[^:\n]+/
 
-list_of_availability : availability ("," WS_INLINE* availability)*
-availability : day WS_INLINE+ timerange
-timerange : start_time "-" end_time
+list_of_availability : availability (_WS? "," _WS? availability)*
+availability : day _WS timerange
+timerange : start_time _WS? ("-"|"–") _WS? end_time
 start_time: timestamp
 end_time: timestamp
-timestamp : HOUR ":" MINUTE | HOUR
-HOUR : ("0" DIGIT | "1" DIGIT | "2" ("0".."3")) -> hour
-     | DIGIT -> hour
-MINUTE : ("0".."5" DIGIT) -> minute
-DIGIT : "0".."9"
+timestamp : HOUR ":" MINUTE PERIOD? | HOUR PERIOD?
+HOUR.2 : /[0-2]?[0-9]/
+MINUTE.2 : /[0-5][0-9]/
+PERIOD : "am"i | "pm"i
 
-day : long_day | short_day_sequence
+// Inline whitespace (spaces/tabs) - can be multiple
+_WS: WS_INLINE+
+
+day : day_range | long_day | short_day_sequence
+
+// Day ranges (e.g., Mon-Fri, Tuesday-Thursday)
+day_range : long_day_single ("-"|"–") long_day_single
 
 // Full day names and common 3-letter abbreviations
-long_day : "sunday"i | "sun"i
-         | "monday"i | "mon"i
-         | "tuesday"i | "tue"i | "tues"i
-         | "wednesday"i | "wed"i
-         | "thursday"i | "thu"i | "thur"i | "thurs"i
-         | "friday"i | "fri"i
-         | "saturday"i | "sat"i
+long_day_single : LONG_DAY_NAME
 
-// Short day codes (must be in specific order to avoid ambiguity)
-short_day_sequence : short_day+
-short_day : "su"i -> sunday
-          | "sa"i -> saturday
-          | "m"i -> monday
-          | "t"i -> tuesday
-          | "w"i -> wednesday
-          | "th"i -> thursday
-          | "r"i -> thursday
-          | "f"i -> friday
+LONG_DAY_NAME : "sunday"i | "sun"i
+              | "monday"i | "mon"i
+              | "tuesday"i | "tue"i | "tues"i
+              | "wednesday"i | "wed"i
+              | "thursday"i | "thu"i | "thur"i | "thurs"i
+              | "friday"i | "fri"i
+              | "saturday"i | "sat"i
 
+long_day : long_day_single
+
+// Short day codes as a single pattern
+short_day_sequence : SHORT_DAY_CODES
+SHORT_DAY_CODES : /(su|sa|th|[mtwrf])+/i
+
+// Newlines, blank lines (with optional indentation), and comments
 _NL: (/\r?\n[\t ]*/ | SH_COMMENT)+
 """
 
@@ -71,6 +73,9 @@ class _AvailFileTransformer(Transformer):
         'friday': 'Friday', 'fri': 'Friday', 'f': 'Friday',
         'saturday': 'Saturday', 'sat': 'Saturday', 'sa': 'Saturday',
     }
+
+    # Day order for ranges
+    DAY_ORDER = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
 
     def start(self, items):
         return items[0] if items else []
@@ -105,58 +110,111 @@ class _AvailFileTransformer(Transformer):
         return avail
 
     def day(self, items):
-        return items[0]
+        day_result = items[0]
+        # If it's a string (single day), wrap in list
+        if isinstance(day_result, str):
+            return [day_result]
+        # If it's already a list (day range or short sequence), return as-is
+        return day_result
 
     def long_day(self, items):
+        return items[0]
+
+    def long_day_single(self, items):
         day_str = str(items[0]).lower()
-        return [self.DAY_MAP.get(day_str, day_str.capitalize())]
+        return self.DAY_MAP.get(day_str, day_str.lower())
+
+    def day_range(self, items):
+        start_day, end_day = items
+        start_idx = self.DAY_ORDER.index(start_day)
+        end_idx = self.DAY_ORDER.index(end_day)
+
+        # Handle wraparound (e.g., Fri-Mon wraps around the week)
+        if start_idx <= end_idx:
+            return self.DAY_ORDER[start_idx:end_idx + 1]
+        else:
+            return self.DAY_ORDER[start_idx:] + self.DAY_ORDER[:end_idx + 1]
 
     def short_day_sequence(self, items):
-        return items
+        # Parse the combined short code string (e.g., "MWF" -> ["Monday", "Wednesday", "Friday"])
+        short_code_map = {
+            'su': 'Sunday',
+            'sa': 'Saturday',
+            'm': 'Monday',
+            't': 'Tuesday',
+            'w': 'Wednesday',
+            'th': 'Thursday',
+            'r': 'Thursday',
+            'f': 'Friday'
+        }
 
-    # Individual short day handlers
-    def sunday(self, _):
-        return 'Sunday'
+        # Get the matched string
+        codes_str = str(items[0]).lower()
 
-    def monday(self, _):
-        return 'Monday'
+        # Parse the string to extract individual day codes
+        result = []
+        i = 0
+        while i < len(codes_str):
+            # Try two-character codes first (su, sa, th)
+            if i + 1 < len(codes_str) and codes_str[i:i+2] in short_code_map:
+                result.append(short_code_map[codes_str[i:i+2]])
+                i += 2
+            # Then single-character codes
+            elif codes_str[i] in short_code_map:
+                result.append(short_code_map[codes_str[i]])
+                i += 1
+            else:
+                i += 1  # Skip unknown characters
 
-    def tuesday(self, _):
-        return 'Tuesday'
-
-    def wednesday(self, _):
-        return 'Wednesday'
-
-    def thursday(self, _):
-        return 'Thursday'
-
-    def friday(self, _):
-        return 'Friday'
-
-    def saturday(self, _):
-        return 'Saturday'
+        return result
 
     def timerange(self, items):
         start_time, end_time = items
         return start_time, end_time
 
+    def start_time(self, items):
+        # Just unwrap - the timestamp has already been transformed
+        return items[0]
+
+    def end_time(self, items):
+        # Just unwrap - the timestamp has already been transformed
+        return items[0]
+
     def timestamp(self, items):
-        if len(items) == 1:
-            # Only hour provided
-            hour = items[0]
-            minute = "00"
-        else:
-            # Hour and minute provided
-            hour, minute = items
+        hour = None
+        minute = "00"
+        period = None
+
+        # Parse items - HOUR and MINUTE come as Token objects, period as string
+        for item in items:
+            item_str = str(item).lower()
+            if item_str in ('am', 'pm'):
+                period = item_str
+            elif hour is None:
+                # This is the HOUR token
+                hour = str(item)
+                # Validate hour is in valid range (0-23)
+                hour_int = int(hour)
+                if hour_int > 23:
+                    raise ValueError(f"Invalid hour: {hour}")
+            else:
+                # This is the MINUTE token
+                minute = str(item)
+
+        # Ensure hour is zero-padded
+        if hour:
+            hour = hour.zfill(2)
+
+        # Convert to 24-hour format if AM/PM specified
+        if period:
+            hour_int = int(hour)
+            if period == 'pm' and hour_int != 12:
+                hour_int += 12
+            elif period == 'am' and hour_int == 12:
+                hour_int = 0
+            hour = str(hour_int).zfill(2)
+
         return f"{hour}:{minute}"
-
-    def hour(self, items):
-        hour_val = ''.join(str(item) for item in items)
-        return hour_val.zfill(2)
-
-    def minute(self, items):
-        minute_val = ''.join(str(item) for item in items)
-        return minute_val
 
 
 def parse(value: str) -> List[Person]:

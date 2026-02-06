@@ -53,6 +53,8 @@ class TimeSpan:
     _end: int = None  # Changed to int (minutes)
 
     def __init__(self, day: Day, start: Union[int, str], end: Union[int, str]):
+        if isinstance(day, str):
+            day = str_to_day(day)
         self._day = day
 
         # Convert string inputs to integer minutes
