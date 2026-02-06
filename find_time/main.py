@@ -12,9 +12,9 @@ sorting = {
     'length>': partial(sorted, key=lambda x: x.time.end - x.time.start,
                        reverse=True),
     'start<': partial(sorted,
-                      key=lambda x: x.time.day.value * 24 + x.time.start),
+                      key=lambda x: x.time.day.value * 1440 + x.time.start),
     'start>': partial(sorted,
-                      key=lambda x: x.time.day.value * 24 + x.time.start,
+                      key=lambda x: x.time.day.value * 1440 + x.time.start,
                       reverse=True),
 }
 

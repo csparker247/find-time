@@ -1,6 +1,9 @@
 from copy import deepcopy
 from enum import Enum
-from typing import Union, Self, Set, Iterable, Tuple
+from typing import Union, Iterable, Tuple, List
+
+# Constant for minutes in a day
+MINUTES_IN_DAY = 24 * 60
 
 
 class Day(Enum):
@@ -31,140 +34,147 @@ def str_to_day(s: str) -> Day:
         return Day.SATURDAY
 
 
-def str_to_time(s: str) -> float:
+def str_to_time(s: str) -> int:
+    """Converts HH:MM string to integer minutes from midnight."""
     h, _, m = s.partition(':')
-    return float(h) + float(m) / 60
+    if not m:
+        m = '0'
+    return int(h) * 60 + int(m)
 
 
-def time_to_int(time: float) -> Tuple[int, int]:
-    i, d = divmod(time, 1)
-    return int(i), int(d * 60)
+def time_to_int(time: int) -> Tuple[int, int]:
+    """Converts integer minutes back to (hour, minute) tuple."""
+    return divmod(time, 60)
 
 
 class TimeSpan:
     _day: Day = None
-    _start: float = None
-    _end: float = None
+    _start: int = None  # Changed to int (minutes)
+    _end: int = None  # Changed to int (minutes)
 
-    def __init__(self, day: Union[str, Day], start: Union[str, float],
-                 end: Union[str, float]):
+    def __init__(self, day: Day, start: Union[int, str], end: Union[int, str]):
         if isinstance(day, str):
             day = str_to_day(day)
+        self._day = day
+
+        # Convert string inputs to integer minutes
         if isinstance(start, str):
             start = str_to_time(start)
         if isinstance(end, str):
             end = str_to_time(end)
-        if start >= 24:
-            start -= 24 * (start // 24)
-        if end >= 24:
-            end -= 24 * (end // 24)
-        self._day = day
-        self._start = start
-        self._end = end
 
-    def __repr__(self):
-        return f'TimeSpan(day={self._day.name}, start={self._start:.2f}, end={self._end:.2f})'
+        self._start = int(start)
+        self._end = int(end)
 
-    def __str__(self):
-        return f'{self._day.name.title()}, {self.start_str}-{self.end_str}'
-
-    @classmethod
-    def from_str(cls, s: str) -> Self:
-        day, _, se = s.strip().partition(' ')
-        start, end = se.split('-')
-        return cls(day, start, end)
+        # Fix Midnight Wrapping:
+        # If end time is less than start time (e.g., 23:00 to 01:00),
+        # assume it wraps to the next day by adding 24 hours (1440 mins).
+        if self._end < self._start:
+            self._end += MINUTES_IN_DAY
 
     @property
-    def day(self):
+    def day(self) -> Day:
         return self._day
 
     @property
-    def start(self):
+    def start(self) -> int:
         return self._start
 
     @property
-    def start_str(self):
-        si, sd = divmod(self._start, 1)
-        return f'{int(si):02}:{int(sd * 60):02}'
-
-    @property
-    def start_int(self):
-        return time_to_int(self._start)
-
-    @property
-    def end(self):
+    def end(self) -> int:
         return self._end
 
     @property
-    def end_str(self):
-        ei, ed = divmod(self._end, 1)
-        return f'{int(ei):02}:{int(ed * 60):02}'
+    def start_int(self) -> Tuple[int, int]:
+        return time_to_int(self._start)
 
     @property
-    def end_int(self):
-        return time_to_int(self._end)
+    def end_int(self) -> Tuple[int, int]:
+        # If end is > 24:00, normalize it for display
+        display_end = self._end % MINUTES_IN_DAY if self._end > MINUTES_IN_DAY else self._end
+        # Handle specific case where 24:00 should display as 24:00 (or 00:00 depending on preference)
+        # Here we just use divmod standard behavior
+        return time_to_int(display_end)
 
-    def contains(self, span: Self) -> bool:
-        if span._day != self._day:
-            return False
+    @property
+    def start_str(self) -> str:
+        h, m = self.start_int
+        return f'{h:02}:{m:02}'
 
+    @property
+    def end_str(self) -> str:
+        h, m = self.end_int
+        return f'{h:02}:{m:02}'
+
+    def contains(self, span: 'TimeSpan') -> bool:
         return span._start >= self._start and span._end <= self._end
+
+    def split_at_midnight(self) -> List['TimeSpan']:
+        """Splits a span that crosses midnight into two spans on adjacent days."""
+        if self._end <= MINUTES_IN_DAY:
+            return [self]
+
+        # Part 1: From start to Midnight (on current day)
+        s1 = TimeSpan(self._day, self._start, MINUTES_IN_DAY)
+
+        # Part 2: From Midnight to end (on next day)
+        next_day_val = (self._day.value + 1) % 7
+        next_day = Day(next_day_val)
+
+        # Remainder time
+        remainder = self._end - MINUTES_IN_DAY
+        s2 = TimeSpan(next_day, 0, remainder)
+
+        return [s1, s2]
+
+    def __repr__(self):
+        return f'{self._day.name} {self.start_str}-{self.end_str}'
 
 
 class EventTime:
-    _time: TimeSpan = None
-    _available: Set[str] = None
-    _not_available: Set[str] = None
-
-    def __init__(self, time: TimeSpan = None, day: Union[str, Day] = None,
-                 start: Union[str, float] = None,
-                 end: Union[str, float] = None):
-        if time is None and (day is None or start is None or end is None):
-            raise ValueError(
-                "Either 'time' or 'day', 'start', and 'end' must be specified")
-        if time is not None:
-            self._time = time
-        else:
-            self._time = TimeSpan(day, start, end)
+    def __init__(self, day: Day, start: int, end: int):
+        self._day = day
+        self._time = TimeSpan(day, start, end)
         self._available = set()
         self._not_available = set()
 
     @property
-    def time(self):
+    def time(self) -> TimeSpan:
         return self._time
 
     @property
-    def num_invited(self):
-        return len(self._available) + len(self._not_available)
-
-    @property
-    def available(self):
-        return self._available
-
-    @property
-    def num_available(self):
+    def num_available(self) -> int:
         return len(self._available)
 
     @property
-    def not_available(self):
-        return self._not_available
+    def num_invited(self) -> int:
+        return len(self._available) + len(self._not_available)
 
-    def add_person(self, person, is_available: bool = None):
-        if is_available is None:
-            is_available = person.is_available(self.time)
-        if is_available:
+    @property
+    def available(self) -> List[str]:
+        return list(self._available)
+
+    @property
+    def not_available(self) -> List[str]:
+        return list(self._not_available)
+
+    def add_person(self, person: 'Person'):
+        if person.is_available(self._time):
             self._available.add(person.name)
         else:
             self._not_available.add(person.name)
 
-    def can_combine(self, event_time: Self) -> bool:
-        if self._time.end != event_time.time.start and self._time.start != event_time.time.end:
+    def can_combine(self, other: 'EventTime') -> bool:
+        # Check if adjacent and availability matches
+        if self._time.day != other._time.day:
             return False
-
-        return self.available == event_time.available and self.not_available == event_time.not_available
+        if self._time.end != other._time.start:
+            return False
+        return (self._available == other._available and
+                self._not_available == other._not_available)
 
     @classmethod
-    def combine(cls, a: Self, b: Self) -> Self:
+    def combine(cls, a: 'EventTime', b: 'EventTime') -> 'EventTime':
         day = a.time.day
         start = min(a.time.start, b.time.start)
         end = max(a.time.end, b.time.end)
@@ -179,15 +189,7 @@ class Person:
 
     def __init__(self, name: str):
         self._name = name
-        self._availability = {
-            Day.SUNDAY: [],
-            Day.MONDAY: [],
-            Day.TUESDAY: [],
-            Day.WEDNESDAY: [],
-            Day.THURSDAY: [],
-            Day.FRIDAY: [],
-            Day.SATURDAY: []
-        }
+        self._availability = {d: [] for d in Day}
 
     def __repr__(self):
         return f'Attendee(name={self._name})'
@@ -200,8 +202,11 @@ class Person:
         return self._name
 
     def add_availability(self, span: TimeSpan):
-        self._availability[span.day].append(span)
-        self._availability[span.day].sort(key=lambda x: x.start)
+        # Automatically split spans that cross midnight
+        # so they are filed under the correct days
+        for s in span.split_at_midnight():
+            self._availability[s.day].append(s)
+            self._availability[s.day].sort(key=lambda x: x.start)
 
     def availability_by_block(self) -> Iterable[TimeSpan]:
         for day in self._availability.values():
@@ -213,8 +218,12 @@ class Person:
 
     def is_available(self, span: Union[TimeSpan, EventTime]) -> bool:
         if isinstance(span, EventTime):
-            span = EventTime.time
-        for slot in self._availability[span.day]:
-            if slot.contains(span):
+            span = span.time
+
+        # Ensure we are looking at the same day
+        day_spans = self._availability[span.day]
+
+        for s in day_spans:
+            if s.contains(span):
                 return True
         return False
